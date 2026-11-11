@@ -1,0 +1,136 @@
+name: Kotlin Plugin Release
+
+on:
+  workflow_call:
+    inputs:
+      plugin-name:
+        description: Plugin name. Must match the Gradle project name, the jar is build/libs/<name>.jar
+        required: true
+        type: string
+      java-version:
+        description: Java version
+        required: false
+        type: string
+        default: '21'
+      gradle-task:
+        description: Gradle task that builds the plugin jar
+        required: false
+        type: string
+        default: jar
+      oras-version:
+        description: ORAS CLI version installed by setup-oras
+        required: false
+        type: string
+        default: '1.3.0'
+    secrets:
+      REGISTRY_HOST:
+        description: Registry host name without scheme and port
+        required: true
+      REGISTRY_USER:
+        required: true
+      REGISTRY_PASSWORD:
+        required: true
+      TS_OAUTH_CLIENT_ID:
+        required: true
+      TS_OAUTH_SECRET:
+        required: true
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compute tags
+        id: tags
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          COMMIT_SHA: ${{ github.sha }}
+          PLUGIN_NAME: ${{ inputs.plugin-name }}
+        run: |
+          set -euo pipefail
+
+          name_re='^[a-z0-9][a-z0-9._-]*$'
+          if [[ ! "${PLUGIN_NAME}" =~ ${name_re} ]]; then
+            echo "::error::plugin-name must match ${name_re}"
+            exit 1
+          fi
+
+          version_re='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+          if [[ "${REF_TYPE}" == "tag" ]]; then
+            version="${REF_NAME#v}"
+            if [[ ! "${version}" =~ ${version_re} ]]; then
+              echo "::error::Tag ${REF_NAME} is not a version tag (expected vX.Y.Z)"
+              exit 1
+            fi
+            primary="${version}"
+          elif [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+            primary="latest"
+          else
+            echo "::error::Release runs only on the default branch or on a version tag (got ${REF_TYPE} ${REF_NAME})"
+            exit 1
+          fi
+
+          {
+            echo "primary=${primary}"
+            echo "extra=sha-${COMMIT_SHA::7}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - uses: spillen/ci-cookbook/actions/setup-java@master
+        with:
+          java-version: ${{ inputs.java-version }}
+
+      - name: Build
+        env:
+          GRADLE_TASK: ${{ inputs.gradle-task }}
+        run: ./gradlew --no-daemon "$GRADLE_TASK"
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Setup oras
+        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
+        with:
+          version: ${{ inputs.oras-version }}
+
+      - name: Login to registry
+        env:
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          printf '%s' "${REGISTRY_PASSWORD}" | oras login "${REGISTRY_HOST}" \
+            -u "${REGISTRY_USER}" \
+            --password-stdin
+
+      - name: Push artifact
+        env:
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+          PLUGIN_NAME: ${{ inputs.plugin-name }}
+          PRIMARY_TAG: ${{ steps.tags.outputs.primary }}
+          EXTRA_TAG: ${{ steps.tags.outputs.extra }}
+        run: |
+          set -euo pipefail
+
+          jar="build/libs/${PLUGIN_NAME}.jar"
+          if [[ ! -f "${jar}" ]]; then
+            echo "::error::${jar} not found. plugin-name must match the Gradle project name"
+            exit 1
+          fi
+
+          repo="${REGISTRY_HOST}/plugins/${PLUGIN_NAME}"
+
+          cd build/libs
+          oras push "${repo}:${PRIMARY_TAG}" "${PLUGIN_NAME}.jar:application/java-archive"
+          oras tag "${repo}:${PRIMARY_TAG}" "${EXTRA_TAG}"
