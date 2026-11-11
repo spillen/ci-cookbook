@@ -1,0 +1,24 @@
+name: Setup Java
+description: Setup Java with Gradle cache
+
+inputs:
+  java-version:
+    description: Java version
+    required: false
+    default: '21'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+        cache: gradle
+        cache-dependency-path: |
+          **/*.gradle.kts
+          **/gradle-wrapper.properties
+
+    - name: Make Gradle executable
+      shell: bash
+      run: chmod +x ./gradlew
