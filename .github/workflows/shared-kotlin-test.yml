@@ -1,0 +1,27 @@
+name: Kotlin Test
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        description: Java version
+        required: false
+        type: string
+        default: '21'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: spillen/ci-cookbook/actions/setup-java@master
+        with:
+          java-version: ${{ inputs.java-version }}
+
+      - name: Run Gradle test
+        run: ./gradlew test
