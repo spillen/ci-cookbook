@@ -1,0 +1,109 @@
+name: Docker Release
+
+on:
+  workflow_call:
+    inputs:
+      image-name:
+        description: Image name, pushed as <registry>/services/<name>
+        required: true
+        type: string
+      context:
+        description: Docker build context
+        required: false
+        type: string
+        default: .
+      dockerfile:
+        description: Path to the Dockerfile
+        required: false
+        type: string
+        default: Dockerfile
+    secrets:
+      REGISTRY_HOST:
+        description: Registry host name without scheme and port
+        required: true
+      REGISTRY_USER:
+        required: true
+      REGISTRY_PASSWORD:
+        required: true
+      TS_OAUTH_CLIENT_ID:
+        required: true
+      TS_OAUTH_SECRET:
+        required: true
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compute tags
+        id: tags
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          COMMIT_SHA: ${{ github.sha }}
+          IMAGE_NAME: ${{ inputs.image-name }}
+          REGISTRY_HOST: ${{ secrets.REGISTRY_HOST }}
+        run: |
+          set -euo pipefail
+
+          name_re='^[a-z0-9][a-z0-9._-]*$'
+          if [[ ! "${IMAGE_NAME}" =~ ${name_re} ]]; then
+            echo "::error::image-name must match ${name_re}"
+            exit 1
+          fi
+
+          version_re='^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+          if [[ "${REF_TYPE}" == "tag" ]]; then
+            version="${REF_NAME#v}"
+            if [[ ! "${version}" =~ ${version_re} ]]; then
+              echo "::error::Tag ${REF_NAME} is not a version tag (expected vX.Y.Z)"
+              exit 1
+            fi
+            primary="${version}"
+          elif [[ "${REF_NAME}" == "${DEFAULT_BRANCH}" ]]; then
+            primary="latest"
+          else
+            echo "::error::Release runs only on the default branch or on a version tag (got ${REF_TYPE} ${REF_NAME})"
+            exit 1
+          fi
+
+          repo="${REGISTRY_HOST}/services/${IMAGE_NAME}"
+          {
+            echo "tags<<EOF"
+            echo "${repo}:${primary}"
+            echo "${repo}:sha-${COMMIT_SHA::7}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: network=host
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ${{ secrets.REGISTRY_HOST }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
