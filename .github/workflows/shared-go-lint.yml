@@ -1,0 +1,34 @@
+name: Go Lint
+
+on:
+  workflow_call:
+    inputs:
+      go-version-file:
+        description: File with the Go version (go.mod, go.work or .go-version)
+        required: false
+        type: string
+        default: go.mod
+      golangci-lint-version:
+        description: golangci-lint version, keep it equal to the local one
+        required: false
+        type: string
+        default: v2.11.3
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: spillen/ci-cookbook/actions/setup-go@master
+        with:
+          go-version-file: ${{ inputs.go-version-file }}
+
+      # Uses .golangci.yml of the project; run also reports the files its formatters would change.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ inputs.golangci-lint-version }}
