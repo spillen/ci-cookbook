@@ -1,0 +1,17 @@
+name: Setup Go
+description: Setup Go from go.mod with module and build cache
+
+inputs:
+  go-version-file:
+    description: File with the Go version (go.mod, go.work or .go-version)
+    required: false
+    default: go.mod
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+        cache: true
+        cache-dependency-path: '**/go.sum'
